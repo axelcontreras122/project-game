@@ -22,17 +22,33 @@ local inputFocusLostConnection
 local sendBtnConnection
 
 local function getPlayerName(userId)
-	local profile = nil
-	local success = pcall(function()
-		profile = RequestProfileEvent:InvokeServer(userId)
-	end)
-	if success and profile then
-		return profile.Name or profile.DisplayName or "Usuario"
+	-- 1. Intentar obtener el apodo del jugador online
+	local p = game:GetService("Players"):GetPlayerByUserId(userId)
+	if p then
+		return tostring(p.DisplayName)
 	end
 
-	local p = Players:GetPlayerByUserId(userId)
-	if p then
-		return p.DisplayName or p.Name
+	-- 2. Obtener el apodo real de los servidores de Roblox (para los que están offline)
+	local success, info = pcall(function()
+		return game:GetService("UserService"):GetUserInfosByUserIdsAsync({userId})
+	end)
+	if success and info and info and info.DisplayName then
+		return tostring(info.DisplayName)
+	end
+
+	-- 3. Respaldo por si fallan los servidores de Roblox
+	local profile = nil
+	pcall(function()
+		profile = RequestProfileEvent:InvokeServer(userId)
+	end)
+	
+	if profile then
+		if profile.DisplayName then 
+			return tostring(profile.DisplayName) 
+		end
+		if profile.Name then 
+			return tostring(profile.Name) 
+		end
 	end
 
 	return "Usuario"
