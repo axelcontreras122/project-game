@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local UIController = {}
 
@@ -61,23 +62,160 @@ local function createBaseInterface()
 	layout.Padding = UDim.new(0, 50)
 	layout.Parent = navBar
 
-	local function createNavButton(name, text, isMain)
-		local btn = Instance.new("TextButton")
-		btn.Name = name .. "Btn"
-		btn.Size = UDim2.new(0, 100, 1, 0)
-		btn.BackgroundTransparency = 1
-		btn.Text = text
-		btn.Font = Enum.Font.GothamBold
-		btn.TextSize = 16
-		btn.TextColor3 = isMain and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(255, 255, 255)
-		btn.ZIndex = 105
-		btn.Parent = navBar
-		return btn
+local function createNavButton(name, text, imageId, isMain)
+
+	local btn = Instance.new("TextButton")
+
+	btn.Name = name .. "Btn"
+
+	btn.Size = UDim2.new(0, 90, 1, 0)
+
+	btn.BackgroundTransparency = 1
+
+	btn.Text = ""
+
+	btn.ZIndex = 105
+
+	btn.Parent = navBar
+
+	------------------------------------------------
+	-- ICON
+	------------------------------------------------
+
+	local icon = Instance.new("ImageLabel")
+
+	icon.Name = "Icon"
+
+	icon.Size = UDim2.new(0,38,0,38)
+
+	icon.Position = UDim2.new(0.5,-19,0,16)
+
+	icon.BackgroundTransparency = 1
+
+	icon.ZIndex = 106
+
+	icon.Image = "http://www.roblox.com/asset/?id=" .. imageId
+
+	icon.ImageColor3 = Color3.fromRGB(255,255,255)
+
+	icon.Parent = btn
+
+	------------------------------------------------
+	-- TEXT
+	------------------------------------------------
+
+	local label = Instance.new("TextLabel")
+
+	label.Size = UDim2.new(1,0,0,20)
+
+	label.Position = UDim2.new(0,0,1,-18)
+
+	label.BackgroundTransparency = 1
+
+	label.Text = text
+
+	label.Font = Enum.Font.GothamBold
+
+	label.TextSize = 13
+
+	label.TextColor3 =
+		isMain
+		and Color3.fromRGB(46,204,113)
+		or Color3.fromRGB(220,220,220)
+
+	label.ZIndex = 106
+
+	label.Parent = btn
+
+	return btn
+end
+
+	local homeBtn =
+	createNavButton(
+		"Home",
+		"INICIO",
+		"73466733433996",
+		true
+	)
+
+local profileBtn =
+	createNavButton(
+		"Profile",
+		"PERFIL",
+		"78274676644723",
+		false
+	)
+
+local chatBtn =
+	createNavButton(
+		"Chat",
+		"CHATS",
+		"99789767122944",
+		false
+	)
+
+------------------------------------------------
+-- MOBILE CHAT FIX
+------------------------------------------------
+
+local function setCardsVisible(state)
+
+	------------------------------------------------
+	-- MAIN GUI
+	------------------------------------------------
+
+	for _, guiObject in ipairs(mainGui:GetChildren()) do
+
+		if guiObject.Name == "UserCard" then
+			guiObject.Visible = state
+		end
 	end
 
-	createNavButton("Home", "INICIO", true)
-	createNavButton("Profile", "PERFIL", false)
-	createNavButton("Chat", "CHATS", false)
+	------------------------------------------------
+	-- BACKGROUND
+	------------------------------------------------
+
+	local background = mainGui:FindFirstChild("Background")
+
+	if background then
+
+		for _, guiObject in ipairs(background:GetChildren()) do
+
+			if guiObject.Name == "UserCard" then
+				guiObject.Visible = state
+			end
+		end
+	end
+end
+
+------------------------------------------------
+-- CHAT BUTTON
+------------------------------------------------
+
+chatBtn.MouseButton1Click:Connect(function()
+
+	if UserInputService.TouchEnabled then
+		setCardsVisible(false)
+	end
+end)
+
+------------------------------------------------
+-- HOME BUTTON
+------------------------------------------------
+
+homeBtn.MouseButton1Click:Connect(function()
+
+	setCardsVisible(true)
+end)
+
+------------------------------------------------
+-- PROFILE BUTTON
+------------------------------------------------
+
+profileBtn.MouseButton1Click:Connect(function()
+
+	setCardsVisible(true)
+end)
 	
 	print("✅ Interfaz base lista sin errores.")
 end

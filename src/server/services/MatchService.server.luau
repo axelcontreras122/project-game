@@ -3,6 +3,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local DataStoreService = game:GetService("DataStoreService")
+local TextService = game:GetService("TextService")
 
 local LikeEvent = ReplicatedStorage:WaitForChild("LikeEvent")
 local ChatEvent = ReplicatedStorage:WaitForChild("ChatEvent")
@@ -14,6 +15,8 @@ local ChatStore = DataStoreService:GetDataStore("ChatHistory_V1")
 
 local GetChatHistory = Network.GetFunction("GetChatHistory")
 local TypingEvent = Network.GetEvent("TypingEvent")
+local GetLeaderboard =
+	Network.GetFunction("GetLeaderboard")
 
 local function getChatKey(userA, userB)
 	return "Chat_" .. tostring(math.min(userA, userB)) .. "_" .. tostring(math.max(userA, userB))
@@ -21,33 +24,14 @@ end
 
 local likes = {}
 
-GetChatHistory.OnServerInvoke = function(player, targetId)
+local lastMessageTimes = {}
+------------------------------------------------
+-- LEADERBOARD
+------------------------------------------------
 
-	local key = getChatKey(player.UserId, targetId)
+GetLeaderboard.OnServerInvoke = function()
 
-	local success, data = pcall(function()
-		return ChatStore:GetAsync(key) or {}
-	end)
-
-	local storedHistory = success and type(data) == "table" and data or {}
-
-	local profile = SessionManager.GetProfile(player.UserId)
-
-	local sessionHistory = {}
-
-	if profile and profile.ChatHistory and profile.ChatHistory[tostring(targetId)] then
-		sessionHistory = profile.ChatHistory[tostring(targetId)]
-	end
-
-	if #storedHistory == 0 and #sessionHistory > 0 then
-		return sessionHistory
-	end
-
-	if #sessionHistory > #storedHistory then
-		return sessionHistory
-	end
-
-	return storedHistory
+	return SessionManager.GetAllProfiles()
 end
 
 TypingEvent.OnServerEvent:Connect(function(player, targetUserId, isTyping)
@@ -55,6 +39,29 @@ TypingEvent.OnServerEvent:Connect(function(player, targetUserId, isTyping)
 	if not targetUserId then
 		return
 	end
+
+	if typeof(isTyping) ~= "boolean" then
+	return
+end
+
+	------------------------------------------------
+-- VERIFY MATCH STILL EXISTS
+------------------------------------------------
+
+local playerProfile =
+	SessionManager.GetProfile(player.UserId)
+
+if not playerProfile then
+	return
+end
+
+if not playerProfile.Matches then
+	return
+end
+
+if not playerProfile.Matches[tostring(targetUserId)] then
+	return
+end
 
 	local targetPlayer = game.Players:GetPlayerByUserId(targetUserId)
 
@@ -73,6 +80,10 @@ LikeEvent.OnServerEvent:Connect(function(player, targetUserId)
 		return
 	end
 
+	if typeof(targetUserId) ~= "number" then
+	return
+end
+
 	if not likes[player.UserId] then
 		likes[player.UserId] = {}
 	end
@@ -90,13 +101,6 @@ LikeEvent.OnServerEvent:Connect(function(player, targetUserId)
 	------------------------------------------------
 
 	likes[player.UserId][targetUserId] = true
-
-	local targetProfile = SessionManager.GetProfile(targetUserId)
-
-if targetProfile then
-	targetProfile.LikesReceived =
-		(targetProfile.LikesReceived or 0) + 1
-end
 
 	------------------------------------------------
 	-- SUMAR LIKE RECIBIDO
@@ -142,6 +146,7 @@ end
 			end
 
 			playerProfile.Friends = totalFriends
+			
 		end
 
 		------------------------------------------------
@@ -162,6 +167,7 @@ end
 			end
 
 			targetProfile.Friends = totalFriends
+		
 		end
 	end
 end)
@@ -172,19 +178,120 @@ end)
 
 ChatEvent.OnServerEvent:Connect(function(player, targetId, message)
 
-	if not targetId or message == "" then
+	------------------------------------------------
+	-- RATE LIMIT
+	------------------------------------------------
+
+	local now = tick()
+
+	if lastMessageTimes[player.UserId]
+	and now - lastMessageTimes[player.UserId] < 0.5 then
 		return
 	end
+
+	lastMessageTimes[player.UserId] = now
+
+	if typeof(message) ~= "string" then
+	return
+end
+
+if typeof(targetId) ~= "number" then
+	return
+end
+
+message = message:sub(1,200)
+
+if message:match("^%s*$") then
+	return
+end
+
+	------------------------------------------------
+-- VERIFY MATCH STILL EXISTS
+------------------------------------------------
+
+local playerProfile =
+	SessionManager.GetProfile(player.UserId)
+
+if not playerProfile then
+	return
+end
+
+if not playerProfile.Matches then
+	return
+end
+
+if not playerProfile.Matches[tostring(targetId)] then
+	return
+end
+
+	------------------------------------------------
+	-- FILTER MESSAGE
+	------------------------------------------------
+
+local senderMessage = message
+local targetMessage = message
+
+local success, filterResult =
+	pcall(function()
+
+		return TextService:FilterStringAsync(
+			message,
+			player.UserId
+		)
+	end)
+
+if success and filterResult then
+
+	local ok1, filteredForSender =
+		pcall(function()
+
+			return filterResult:GetChatForUserAsync(
+				player.UserId
+			)
+		end)
+
+	if ok1 and filteredForSender then
+		senderMessage = filteredForSender
+	end
+
+	local ok2, filteredForTarget =
+		pcall(function()
+
+			return filterResult:GetChatForUserAsync(
+				targetId
+			)
+		end)
+
+	if ok2 and filteredForTarget then
+		targetMessage = filteredForTarget
+	end
+
+else
+
+	senderMessage = "###"
+	targetMessage = "###"
+end
 
 	local targetPlayer = game.Players:GetPlayerByUserId(targetId)
 
 	local timestamp = os.time()
 
-	ChatEvent:FireClient(player, player.UserId, message, timestamp)
+	ChatEvent:FireClient(
+	player,
+	player.UserId,
+	senderMessage,
+	timestamp
+)
 
-	if targetPlayer then
-		ChatEvent:FireClient(targetPlayer, player.UserId, message, timestamp)
-	end
+if targetPlayer then
+
+	ChatEvent:FireClient(
+		targetPlayer,
+		player.UserId,
+		targetMessage,
+		timestamp
+	)
+end
 
 	local key = getChatKey(player.UserId, targetId)
 
@@ -196,7 +303,7 @@ ChatEvent.OnServerEvent:Connect(function(player, targetId, message)
 
 			table.insert(history, {
 				senderId = player.UserId,
-				message = message,
+				message = filteredMessage,
 				timestamp = timestamp
 			})
 

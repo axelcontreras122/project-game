@@ -2,9 +2,28 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local ChatEvent = ReplicatedStorage:WaitForChild("ChatEvent")
 local LikeEvent = ReplicatedStorage:WaitForChild("LikeEvent")
+local OpenChatEvent =
+	ReplicatedStorage
+	:WaitForChild("OpenChatEvent")
+
+local RemoveMatchEvent =
+	ReplicatedStorage
+	:WaitForChild("RemoveMatchEvent")
+
+	local MatchRemovedEvent =
+	ReplicatedStorage
+	:WaitForChild("MatchRemovedEvent")
 
 local Modules = ReplicatedStorage:WaitForChild("Client"):WaitForChild("modules")
 local ChatUI = require(Modules:WaitForChild("ChatUI"))
+local NotificationUI =
+	require(
+		ReplicatedStorage
+		.Client
+		.modules
+		.NotificationUI
+	)
+
 local MatchListUI = require(Modules:WaitForChild("MatchListUI"))
 
 local Network = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Network"))
@@ -15,6 +34,9 @@ local TypingEvent = Network.GetEvent("TypingEvent")
 local LocalPlayer = Players.LocalPlayer
 local chatPanel, currentScroll, chatTargetId, currentTypingLabel
 local matchesSaved = {} -- Aquí se guardan los matches sin perderse
+local unreadMessages = {}
+local playerNameCache = {}
+local chatHistoryCache = {}
 
 -- Store event connections to disconnect them later
 local inputTextConnection
@@ -22,19 +44,28 @@ local inputFocusLostConnection
 local sendBtnConnection
 
 local function getPlayerName(userId)
+	if playerNameCache[userId] then
+		return playerNameCache[userId]
+	end
 	-- 1. Intentar obtener el apodo del jugador online
 	local p = game:GetService("Players"):GetPlayerByUserId(userId)
 	if p then
-		return tostring(p.DisplayName)
+				playerNameCache[userId] =
+			tostring(p.DisplayName)
+
+		return playerNameCache[userId]
 	end
 
 	-- 2. Obtener el apodo real de los servidores de Roblox (para los que están offline)
 	local success, info = pcall(function()
 		return game:GetService("UserService"):GetUserInfosByUserIdsAsync({userId})
 	end)
-	if success and info and info and info.DisplayName then
-		return tostring(info.DisplayName)
-	end
+	if success and info and info[1] then
+			playerNameCache[userId] =
+			tostring(info[1].DisplayName)
+
+		return playerNameCache[userId]
+end
 
 	-- 3. Respaldo por si fallan los servidores de Roblox
 	local profile = nil
@@ -43,15 +74,27 @@ local function getPlayerName(userId)
 	end)
 	
 	if profile then
-		if profile.DisplayName then 
-			return tostring(profile.DisplayName) 
-		end
-		if profile.Name then 
-			return tostring(profile.Name) 
-		end
+
+	if profile.DisplayName then
+
+		playerNameCache[userId] =
+			tostring(profile.DisplayName)
+
+		return playerNameCache[userId]
 	end
 
-	return "Usuario"
+	if profile.Name then
+
+		playerNameCache[userId] =
+			tostring(profile.Name)
+
+		return playerNameCache[userId]
+	end
+end
+
+		playerNameCache[userId] = "Usuario"
+
+	return playerNameCache[userId]
 end
 
 -- 📱💻 Responsivo: Adaptación a Celular y PC
@@ -100,8 +143,19 @@ local function renderMatchList()
 	for id, data in pairs(matchesSaved) do
 		hasMatches = true
 		local isOnline = Players:GetPlayerByUserId(id) ~= nil
-		MatchListUI.createEntry(scroll, data, isOnline, function()
+		MatchListUI.createEntry(
+
+	scroll,
+
+	data,
+
+	isOnline,
+
+	unreadMessages[id],
+
+	function()
 			chatTargetId = id
+			unreadMessages[id] = nil
 			chatPanel:ClearAllChildren()
 			Instance.new("UICorner", chatPanel).CornerRadius = UDim.new(0, 24)
 			
@@ -110,18 +164,64 @@ local function renderMatchList()
 			if inputFocusLostConnection then inputFocusLostConnection:Disconnect() end
 			if sendBtnConnection then sendBtnConnection:Disconnect() end
 			
-			local s, input, sendBtn, typingLabel = ChatUI.setupChatElements(chatPanel, data.DisplayName or data.Name, renderMatchList, isOnline)
+			local s, input, sendBtn, typingLabel = ChatUI.setupChatElements(
+	chatPanel,
+	data.DisplayName or data.Name,
+	renderMatchList,
+	isOnline,
+	id
+)
 			currentScroll = s
 			currentTypingLabel = typingLabel
+
+			ChatUI.OnDeleteMatch = function()
+
+	------------------------------------------------
+	-- REMOVE MATCH SERVER
+	------------------------------------------------
+
+	RemoveMatchEvent:FireServer(id)
+
+	------------------------------------------------
+	-- LOCAL CLEANUP
+	------------------------------------------------
+
+	matchesSaved[id] = nil
+
+	unreadMessages[id] = nil
+
+	chatTargetId = nil
+
+	renderMatchList()
+end
 			
 			-- Cargar historial de chat
-			local history = {}
-			if GetChatHistory then
-				history = GetChatHistory:InvokeServer(id)
-			end
-			if type(history) ~= "table" then
-				history = {}
-			end
+			local history =
+	chatHistoryCache[id]
+
+if not history then
+
+	history = {}
+
+	if GetChatHistory then
+
+		local success, result =
+			pcall(function()
+
+				return GetChatHistory
+					:InvokeServer(id)
+			end)
+
+		if success and type(result) == "table" then
+
+			history = result
+
+			chatHistoryCache[id] =
+				result
+		end
+	end
+end
+
 			for _, msgData in ipairs(history) do
 				ChatUI.addMessage(currentScroll, msgData.message, (msgData.senderId == LocalPlayer.UserId), msgData.timestamp, msgData.senderId)
 			end
@@ -144,6 +244,8 @@ local function renderMatchList()
 				if msgText and msgText:match("^%s*$") == nil and msgText ~= "" then
 					input.Text = ""
 					ChatEvent:FireServer(id, msgText)
+
+
 					if lastTyping then
 						lastTyping = false
 						TypingEvent:FireServer(id, false)
@@ -231,20 +333,219 @@ LikeEvent.OnClientEvent:Connect(function(matchedUserId, isMatch)
 end)
 
 ChatEvent.OnClientEvent:Connect(function(senderId, message, timestamp)
+
+	if not chatHistoryCache[senderId] then
+		chatHistoryCache[senderId] = {}
+	end
+
+table.insert(
+	chatHistoryCache[senderId],
+	{
+		senderId = senderId,
+		message = message,
+		timestamp = timestamp
+	}
+)
+
+if #chatHistoryCache[senderId] > 50 then
+
+	table.remove(
+		chatHistoryCache[senderId],
+		1
+	)
+end
+
 	if currentScroll and (senderId == chatTargetId or senderId == LocalPlayer.UserId) then
 		ChatUI.addMessage(currentScroll, message, (senderId == LocalPlayer.UserId), timestamp, senderId)
 		-- Scroll to bottom
 		task.defer(function()
 			currentScroll.CanvasPosition = Vector2.new(0, math.max(0, currentScroll.AbsoluteCanvasSize.Y - currentScroll.AbsoluteSize.Y))
+			
 		end)
 	end
+	------------------------------------------------
+	-- MOVE CHAT TO TOP
+	------------------------------------------------
+
+	if senderId ~= LocalPlayer.UserId then
+
+		local oldData = matchesSaved[senderId]
+
+		if oldData then
+
+			matchesSaved[senderId] = nil
+
+			local reordered = {
+				[senderId] = oldData
+			}
+
+			for id,data in pairs(matchesSaved) do
+				reordered[id] = data
+			end
+
+			matchesSaved = reordered
+		end
+
+		------------------------------------------------
+		-- UNREAD
+		------------------------------------------------
+
+		if senderId ~= chatTargetId then
+			unreadMessages[senderId] = true
+		end
+	end
+
+		------------------------------------------------
+	-- NOTIFICATION
+	------------------------------------------------
+
+	if senderId ~= LocalPlayer.UserId
+	and senderId ~= chatTargetId then
+
+		local senderName =
+			getPlayerName(senderId)
+
+		NotificationUI.show({
+
+			Name = senderName,
+
+			UserId = senderId,
+
+			Message = message,
+
+			OnClick = function()
+
+				chatPanel.Visible = true
+
+				OpenChatEvent:Fire(senderId)
+			end
+		})
+	end
+
+
 end)
 
 TypingEvent.OnClientEvent:Connect(function(senderId, isTyping)
+
 	if currentTypingLabel and senderId == chatTargetId then
-		currentTypingLabel.Text = isTyping and "Escribiendo..." or ""
+		currentTypingLabel.Text =
+			isTyping and "Escribiendo..." or ""
 	end
 end)
+
+------------------------------------------------
+-- OPEN CHAT EVENT
+------------------------------------------------
+
+OpenChatEvent.Event:Connect(function(userId)
+
+	if not chatPanel then
+		return
+	end
+
+	local data = matchesSaved[userId]
+
+	if not data then
+		return
+	end
+
+	chatPanel.Visible = true
+
+	chatTargetId = userId
+
+	chatPanel:ClearAllChildren()
+
+	Instance.new("UICorner", chatPanel)
+		.CornerRadius = UDim.new(0,24)
+
+	local isOnline =
+		Players:GetPlayerByUserId(userId) ~= nil
+
+	local s,input,sendBtn,typingLabel =
+		ChatUI.setupChatElements(
+	chatPanel,
+	data.DisplayName or data.Name,
+	renderMatchList,
+	isOnline,
+	userId
+)
+	currentScroll = s
+	currentTypingLabel = typingLabel
+
+ChatUI.OnDeleteMatch = function()
+
+	------------------------------------------------
+	-- REMOVE MATCH SERVER
+	------------------------------------------------
+
+	RemoveMatchEvent:FireServer(userId)
+
+	------------------------------------------------
+	-- LOCAL CLEANUP
+	------------------------------------------------
+
+	matchesSaved[userId] = nil
+
+	unreadMessages[userId] = nil
+
+	chatTargetId = nil
+
+	renderMatchList()
+end
+
+	local history =
+	chatHistoryCache[userId]
+
+if not history then
+
+	history = {}
+
+	if GetChatHistory then
+
+		local success, result =
+			pcall(function()
+
+				return GetChatHistory
+					:InvokeServer(userId)
+			end)
+
+		if success and type(result) == "table" then
+
+			history = result
+
+			chatHistoryCache[userId] =
+	result
+		end
+	end
+end
+
+	for _,msgData in ipairs(history) do
+
+		ChatUI.addMessage(
+			currentScroll,
+			msgData.message,
+			(msgData.senderId == LocalPlayer.UserId),
+			msgData.timestamp,
+			msgData.senderId
+		)
+	end
+
+	task.defer(function()
+
+		currentScroll.CanvasPosition =
+			Vector2.new(
+				0,
+				math.max(
+					0,
+					currentScroll.AbsoluteCanvasSize.Y
+					-
+					currentScroll.AbsoluteSize.Y
+				)
+			)
+	end)
+end)
+
+
 
 -- 🔌 Conectar Botón e Iniciar (Restaurado)
 task.spawn(function()
@@ -280,4 +581,96 @@ task.spawn(function()
 			renderMatchList() 
 		end
 	end)
+end)
+
+------------------------------------------------
+-- REALTIME ONLINE STATUS
+------------------------------------------------
+
+local function refreshChatStatuses()
+
+	if not chatPanel then
+		return
+	end
+
+	if not chatPanel.Visible then
+		return
+	end
+
+	------------------------------------------------
+	-- ONLY REFRESH MATCH LIST
+	------------------------------------------------
+
+	if not chatTargetId then
+
+		renderMatchList()
+	end
+end
+
+------------------------------------------------
+-- MATCH REMOVED REALTIME
+------------------------------------------------
+MatchRemovedEvent.OnClientEvent:Connect(function(removedUserId)
+
+	------------------------------------------------
+	-- REMOVE LOCAL DATA
+	------------------------------------------------
+
+	matchesSaved[removedUserId] = nil
+
+	unreadMessages[removedUserId] = nil
+
+	------------------------------------------------
+	-- CLOSE ACTIVE CHAT
+	------------------------------------------------
+
+	if chatTargetId == removedUserId then
+
+		chatTargetId = nil
+
+		currentScroll = nil
+
+		currentTypingLabel = nil
+
+			------------------------------------------------
+	-- DISCONNECT CHAT EVENTS
+	------------------------------------------------
+
+	if inputTextConnection then
+		inputTextConnection:Disconnect()
+	end
+
+	if inputFocusLostConnection then
+		inputFocusLostConnection:Disconnect()
+	end
+
+	if sendBtnConnection then
+		sendBtnConnection:Disconnect()
+	end
+
+		renderMatchList()
+	end
+
+	------------------------------------------------
+	-- REFRESH UI
+	------------------------------------------------
+
+	if chatPanel and chatPanel.Visible then
+
+		renderMatchList()
+	end
+end)
+
+Players.PlayerAdded:Connect(function()
+
+	task.wait(1)
+
+	refreshChatStatuses()
+end)
+
+Players.PlayerRemoving:Connect(function()
+
+	task.wait(1)
+
+	refreshChatStatuses()
 end)

@@ -1,6 +1,6 @@
 local MatchListUI = {}
 
-function MatchListUI.createEntry(parent, data, online, onClick)
+function MatchListUI.createEntry(parent, data, online, unread, onClick)
 	local b = Instance.new("TextButton")
 	b.Size = UDim2.new(1, -20, 0, 85)
 	b.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
@@ -37,6 +37,33 @@ function MatchListUI.createEntry(parent, data, online, onClick)
 	status.BackgroundTransparency = 1
 	status.TextXAlignment = Enum.TextXAlignment.Left
 	status.ZIndex = 1011
+
+	------------------------------------------------
+-- UNREAD BADGE
+------------------------------------------------
+
+if unread then
+
+	local badge = Instance.new("Frame")
+
+	badge.Size = UDim2.new(0,14,0,14)
+
+	badge.Position = UDim2.new(1,-24,0,12)
+
+	badge.BackgroundColor3 =
+		Color3.fromRGB(255,60,60)
+
+	badge.BorderSizePixel = 0
+
+	badge.ZIndex = 1015
+
+	badge.Parent = b
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1,0)
+	corner.Parent = badge
+
+end
 
 	b.MouseButton1Click:Connect(onClick)
 	return b

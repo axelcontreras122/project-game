@@ -4,17 +4,18 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 
-local Modules = ReplicatedStorage:WaitForChild("Client"):WaitForChild("modules")
+local Modules = ReplicatedStorage:WaitForChild("Client",5):WaitForChild("modules",5)
 
-local LikeEvent = ReplicatedStorage:WaitForChild("LikeEvent")
+local LikeEvent = ReplicatedStorage:WaitForChild("LikeEvent",5)
 
-local CardAnimator = require(Modules:WaitForChild("CardAnimator"))
-local CardFactory = require(Modules:WaitForChild("CardFactory"))
-local MatchUI = require(Modules:WaitForChild("MatchUI"))
+local CardAnimator = require(Modules:WaitForChild("CardAnimator",5))
+local CardFactory = require(Modules:WaitForChild("CardFactory",5))
+local MatchUI = require(Modules:WaitForChild("MatchUI",5))
 
-local Network = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Network"))
+local Network = require(ReplicatedStorage:WaitForChild("Shared",5):WaitForChild("Network",5))
 
 local RequestProfileEvent = Network.GetFunction("RequestProfile")
 
@@ -27,6 +28,8 @@ local spring = CardAnimator.new(1, 150, 20)
 
 local isDragging = false
 local canMove = false
+local isProcessingDecision = false
+local buttonDebounce = false
 
 local startMousePos = Vector2.new(0, 0)
 
@@ -35,8 +38,12 @@ local moveDeadzone = 10
 
 local viewedPlayers = {}
 local matchedPlayers = {}
+local likedPlayers = {}
+local pendingRefresh = false
 
 local searchingLabel = nil
+
+local profileCache = {}
 
 ------------------------------------------------
 -- SEARCH LABEL
@@ -58,7 +65,7 @@ local function updateSearchingLabel(parentGui)
 
 		searchingLabel.BackgroundTransparency = 1
 
-		searchingLabel.ZIndex = 9999
+		searchingLabel.ZIndex = 5
 
 		searchingLabel.Parent = parentGui
 	end
@@ -77,7 +84,14 @@ local function updateSearchingLabel(parentGui)
 		.. "\nMatches ocultos: "
 		.. matchCount
 
+	local chatFrame = parentGui:FindFirstChild("ChatFrame")
+
+if chatFrame and chatFrame.Visible then
+	searchingLabel.Visible = false
+else
 	searchingLabel.Visible = (currentCard == nil)
+end
+
 end
 
 ------------------------------------------------
@@ -93,10 +107,14 @@ LikeEvent.OnClientEvent:Connect(function(senderId, data)
 		local matchedPlayer = Players:GetPlayerByUserId(senderId)
 
 		if matchedPlayer then
-			MatchUI.show({
-				Name = matchedPlayer.DisplayName or matchedPlayer.Name
-			})
-		end
+
+	MatchUI.show({
+
+		Name = matchedPlayer.DisplayName,
+
+		UserId = matchedPlayer.UserId
+	})
+end
 	end
 end)
 
@@ -113,8 +131,9 @@ local function getNextRealPlayer()
 	for _, p in ipairs(allPlayers) do
 
 		if p ~= LocalPlayer
-			and not viewedPlayers[p.UserId]
-			and not matchedPlayers[p.UserId]
+	and not viewedPlayers[p.UserId]
+	and not matchedPlayers[p.UserId]
+	and not likedPlayers[p.UserId]
 		then
 			table.insert(availablePlayers, p)
 		end
@@ -126,7 +145,10 @@ local function getNextRealPlayer()
 
 		for _, p in ipairs(allPlayers) do
 
-			if p ~= LocalPlayer and not matchedPlayers[p.UserId] then
+			if p ~= LocalPlayer
+	and not matchedPlayers[p.UserId]
+	and not likedPlayers[p.UserId]
+then
 				table.insert(availablePlayers, p)
 			end
 		end
@@ -143,25 +165,69 @@ end
 -- PLAYER ADDED
 ------------------------------------------------
 
+local function refreshCards()
+
+	viewedPlayers = {}
+
+	pendingRefresh = false
+
+	if currentCard then
+
+		currentCard:Destroy()
+
+		currentCard = nil
+
+		currentCardUserId = nil
+	end
+
+	task.wait()
+
+	loadNextCard()
+end
+
 Players.PlayerAdded:Connect(function(player)
 
-	if player ~= LocalPlayer then
+	if player == LocalPlayer then
+		return
+	end
 
-		task.wait(1)
+	viewedPlayers[player.UserId] = nil
 
-		if not currentCard then
-			loadNextCard()
+	------------------------------------------------
+	-- REMOVE ALL OLD CARDS
+	------------------------------------------------
+
+	local MainGui =
+		LocalPlayer.PlayerGui
+		:WaitForChild("MainAppGui",5)
+
+	local background =
+		MainGui:FindFirstChild("Background")
+
+	if background then
+
+		for _,v in ipairs(background:GetChildren()) do
+
+			if v.Name == "UserCard" then
+				v:Destroy()
+			end
 		end
 	end
-end)
 
+	currentCard = nil
+	currentCardUserId = nil
+
+	task.wait(0.1)
+
+	loadNextCard()
+end)
 ------------------------------------------------
 -- LOAD CARD
 ------------------------------------------------
 
 function loadNextCard()
 
-	local MainGui = LocalPlayer.PlayerGui:FindFirstChild("MainAppGui")
+	local MainGui = LocalPlayer.PlayerGui:WaitForChild("MainAppGui",5)
 
 	if not MainGui then
 		return
@@ -183,42 +249,83 @@ function loadNextCard()
 	spring.Velocity = Vector2.new(0,0)
 
 	------------------------------------------------
-	-- GET PROFILE
-	------------------------------------------------
-
-	local profile = nil
-
-	pcall(function()
-		profile = RequestProfileEvent:InvokeServer(targetPlayer.UserId)
-	end)
-
-	profile = profile or {}
-
-	------------------------------------------------
 	-- CREATE CARD
 	------------------------------------------------
 
-	local profileData = nil
+	local profileData =
+	profileCache[targetPlayer.UserId]
 
-pcall(function()
-	profileData = RequestProfileEvent:InvokeServer(targetPlayer.UserId)
-end)
+if not profileData then
+
+	local success, result =
+		pcall(function()
+
+			return RequestProfileEvent
+				:InvokeServer(
+					targetPlayer.UserId
+				)
+		end)
+
+	if success and result then
+
+		profileData = result
+
+		profileCache[
+			targetPlayer.UserId
+		] = result
+
+	else
+
+		profileData = {}
+	end
+end
+
+local playTime =
+	(profileData and profileData.PlayTime) or 0
+
+local hours =
+	math.floor(playTime / 3600)
+
+local minutes =
+	math.floor((playTime % 3600) / 60)
+
+local formattedTime =
+	string.format(
+		"%02d:%02d",
+		hours,
+		minutes
+	)
 
 currentCard = CardFactory.create({
+
 	UserId = targetPlayer.UserId,
+
 	Name = targetPlayer.DisplayName or targetPlayer.Name,
 
-	Friends = profileData and profileData.FriendsCount or 0,
-	Likes = profileData and profileData.LikesReceived or 0,
-	Streak = profileData and profileData.LoginStreak or 0,
+	Friends = profileData and profileData.Friends or 0,
+	Likes = profileData and profileData.Likes or 0,
+
+
+Hours = formattedTime,
+
+Tags = profileData and profileData.Tags or {},
 
 	Interests = {{
 		Name = "Online",
 		Color = Color3.fromRGB(46, 204, 113)
 	}}
+	
 })
 
+currentCard.Name = "UserCard"
+
+	local background = MainGui:FindFirstChild("Background")
+
+if background then
+	currentCard.Parent = background
+else
 	currentCard.Parent = MainGui
+end
 
 	currentCard.ZIndex = 99999
 	currentCard.Position = UDim2.new(0.5, 0, 0.45, 0)
@@ -237,12 +344,139 @@ currentCard = CardFactory.create({
 end
 
 ------------------------------------------------
+-- TRANSITION EFFECT
+------------------------------------------------
+
+local function playTransition(direction)
+
+	local MainGui = LocalPlayer.PlayerGui:WaitForChild("MainAppGui",5)
+
+	if not MainGui then
+		return
+	end
+
+	------------------------------------------------
+	-- OVERLAY
+	------------------------------------------------
+
+	local overlay = Instance.new("Frame")
+
+	overlay.Size = UDim2.new(1,0,1,0)
+	overlay.BackgroundTransparency = 1
+	overlay.BorderSizePixel = 0
+	overlay.ZIndex = 200000
+
+	if direction == "Like" then
+		overlay.BackgroundColor3 = Color3.fromRGB(57, 255, 20)
+	else
+		overlay.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+	end
+
+	overlay.Parent = MainGui
+
+	------------------------------------------------
+	-- ICON
+	------------------------------------------------
+
+	local icon = Instance.new("ImageLabel")
+
+	icon.AnchorPoint = Vector2.new(0.5,0.5)
+	icon.Position = UDim2.new(0.5,0,0.5,0)
+
+	icon.Size = UDim2.new(0,0,0,0)
+
+	icon.BackgroundTransparency = 1
+	icon.ImageTransparency = 1
+
+	icon.ZIndex = 200001
+
+	if direction == "Like" then
+		icon.Image = "rbxassetid://122843530438525"
+	else
+		icon.Image = "rbxassetid://92185118464767"
+	end
+
+	icon.Parent = overlay
+
+	------------------------------------------------
+	-- ENTRADA SUAVE
+	------------------------------------------------
+
+	local fadeIn = TweenService:Create(
+		overlay,
+		TweenInfo.new(0.15, Enum.EasingStyle.Quad),
+		{
+			BackgroundTransparency = 0.15
+		}
+	)
+
+	local iconIn = TweenService:Create(
+		icon,
+		TweenInfo.new(0.22, Enum.EasingStyle.Back),
+		{
+			Size = UDim2.new(0,220,0,220),
+			ImageTransparency = 0
+		}
+	)
+
+	fadeIn:Play()
+	iconIn:Play()
+
+	------------------------------------------------
+	-- SALIDA SUAVE
+	------------------------------------------------
+
+	task.delay(0.45, function()
+
+		local fadeOut = TweenService:Create(
+			overlay,
+			TweenInfo.new(0.2, Enum.EasingStyle.Quad),
+			{
+				BackgroundTransparency = 1
+			}
+		)
+
+		local iconOut = TweenService:Create(
+			icon,
+			TweenInfo.new(0.2, Enum.EasingStyle.Quad),
+			{
+				Size = UDim2.new(0,320,0,320),
+				ImageTransparency = 1
+			}
+		)
+
+		fadeOut:Play()
+		iconOut:Play()
+
+		Debris:AddItem(overlay, 0.4)
+	end)
+end
+
+------------------------------------------------
 -- HANDLE DECISION
 ------------------------------------------------
 
 function handleDecision(direction, targetUserId)
 
+if buttonDebounce then
+		return
+	end
+
+	buttonDebounce = true
+
+	if isProcessingDecision then
+
+		buttonDebounce = false
+		return
+	end
+
+	isProcessingDecision = true
+
 	if not currentCard or not currentCardUserId then
+		isProcessingDecision = false
+		
+
+		buttonDebounce = false
 		return
 	end
 
@@ -251,9 +485,32 @@ function handleDecision(direction, targetUserId)
 
 	viewedPlayers[targetUserId] = true
 
-	local cardToDestroy = currentCard
+	local oldCard = currentCard
+
+	------------------------------------------------
+	-- LIMPIAR REFERENCIAS
+	------------------------------------------------
+
+	currentCard = nil
+	currentCardUserId = nil
+
+	spring.Position = Vector2.new(0,0)
+spring.Target = Vector2.new(0,0)
+spring.Velocity = Vector2.new(0,0)
+
+	------------------------------------------------
+	-- EFECTO VISUAL
+	------------------------------------------------
+
+	playTransition(direction)
+
+	------------------------------------------------
+	-- ANIMACIÓN SWIPE
+	------------------------------------------------
 
 	if direction == "Like" then
+
+	likedPlayers[targetUserId] = true
 
 		spring.Target = Vector2.new(2000, 0)
 
@@ -264,22 +521,44 @@ function handleDecision(direction, targetUserId)
 		spring.Target = Vector2.new(-2000, 0)
 	end
 
+	------------------------------------------------
+	-- DESTRUIR TARJETA
+	------------------------------------------------
+
 	task.spawn(function()
 
-		task.wait(0.3)
+		task.wait(0.12)
 
-		if cardToDestroy then
-			cardToDestroy:Destroy()
+		if oldCard and oldCard.Parent then
+			oldCard:Destroy()
 		end
 	end)
 
-	if currentCard == cardToDestroy then
+	------------------------------------------------
+	-- SIGUIENTE PERFIL
+	------------------------------------------------
 
-		currentCard = nil
-		currentCardUserId = nil
+task.delay(0.2, function()
+
+	if pendingRefresh then
+
+		viewedPlayers = {}
+
+		pendingRefresh = false
 	end
 
 	loadNextCard()
+
+	local MainGui = LocalPlayer.PlayerGui:WaitForChild("MainAppGui",5)
+
+	if MainGui then
+		updateSearchingLabel(MainGui)
+	end
+
+	isProcessingDecision = false
+			buttonDebounce = false
+end)
+
 end
 
 ------------------------------------------------
@@ -288,9 +567,15 @@ end
 
 RunService.RenderStepped:Connect(function(dt)
 
-	if not currentCard then
-		return
-	end
+if not currentCard then
+	return
+end
+
+if not currentCard.Parent then
+
+	currentCard = nil
+	return
+end
 
 	dt = math.min(dt, 0.016)
 
@@ -372,22 +657,29 @@ end)
 
 task.spawn(function()
 
-	task.spawn(function()
+	------------------------------------------------
+	-- LOAD SAVED MATCHES
+	------------------------------------------------
 
-		task.wait(1)
+local success, profile =
+	pcall(function()
 
-		pcall(function()
-
-			local profile = RequestProfileEvent:InvokeServer()
-
-			if profile and profile.Matches then
-
-				for userIdStr, _ in pairs(profile.Matches) do
-					matchedPlayers[tonumber(userIdStr)] = true
-				end
-			end
-		end)
+		return RequestProfileEvent:InvokeServer()
 	end)
+
+if success and profile and profile.Matches then
+
+	for userIdStr, _ in pairs(profile.Matches) do
+
+		matchedPlayers[
+			tonumber(userIdStr)
+		] = true
+	end
+end
+
+	------------------------------------------------
+	-- MAIN LOOP
+	------------------------------------------------
 
 	while true do
 
